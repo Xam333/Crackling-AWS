@@ -860,7 +860,7 @@ class CracklingStack(Stack):
 
 
 app = cdk.App()
-stack_name = app.node.try_get_context("name") or "CracklingStack"
+stack_name = app.node.try_get_context("name") or "N11078472-CracklingStack"
 CracklingStack(app, stack_name, synthesizer=DefaultStackSynthesizer(
     #file_assets_bucket_name="a-public-facing-bucket-n10753753"
 ))
