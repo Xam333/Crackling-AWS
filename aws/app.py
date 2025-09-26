@@ -183,6 +183,14 @@ class CracklingStack(Stack):
                 ),
                 removal_policy=RemovalPolicy.DESTROY                      
         )
+        ddbIndexerJobs.add_global_secondary_index(
+            index_name="Genome-index",
+            partition_key=ddb_.Attribute(
+                name="Genome",
+                type=ddb_.AttributeType.STRING
+            ),
+            projection_type=ddb_.ProjectionType.ALL  # include all attributes in the index
+        )
 
         ### Lambda is an event-driven compute service.
         # Some lambda functions may need additional resources - these are provided via layers.
