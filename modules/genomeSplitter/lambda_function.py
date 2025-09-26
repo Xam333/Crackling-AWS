@@ -102,37 +102,39 @@ def s3_multi_file_to_tmp(accession: str):
     return extracted_files, tmp_extract_dir
         
 
-def split_and_upload(stream, accession):
+def split_and_upload(fasta_file_path, accession):
     chunk_index = 0
     chunk_size = 0
     chunk_lines = []
 
-    for line in stream.iter_lines():
-        if not line:
-            continue
+    with open(fasta_file_path, "rb") as f_in:
+        for line in f_in:  # <- standard file iteration, no .iter_lines()
+            if not line.strip():
+                continue
 
-        line_bytes = line + b"\n"
+            chunk_lines.append(line)
+            chunk_size += len(line)
 
-        if line.startswith(b">") and chunk_size >= CHUNK_SIZE and chunk_lines:
+            if line.startswith(b">") and chunk_size >= CHUNK_SIZE and chunk_lines:
+                # Upload current chunk to S3
+                upload_chunk_to_s3(chunk_lines, accession, chunk_index)
+                chunk_index += 1
+                chunk_lines, chunk_size = [], 0
+
+        # Upload any remaining lines
+        if chunk_lines:
             upload_chunk_to_s3(chunk_lines, accession, chunk_index)
             chunk_index += 1
-            chunk_lines, chunk_size = [], 0
 
-        chunk_lines.append(line_bytes)
-        chunk_size += len(line_bytes)
-
-    if chunk_lines:
-        upload_chunk_to_s3(chunk_lines, accession, chunk_index)
-
-    return chunk_index + 1  # Total chunks
+    return chunk_index  # total chunks uploaded
 
 
 def upload_chunk_to_s3(lines, accession, index):
-    # Upload genome chunk data into S3
-    s3_destination_path = f"/chunks/{accession}/chunk_{index}.fasta"
+    s3_destination_path = f"chunks/{accession}/chunk_{index}.fasta"  # removed leading /
     chunk_data = BytesIO(b"".join(lines))
     s3_client.upload_fileobj(chunk_data, s3_bucket, s3_destination_path)
     print(f"[GENOME SPLITTER] 🟢 Uploaded {s3_destination_path}")
+
 
 
 def record_job_progress(jobid, accession, sequence, total_chunks):
@@ -168,8 +170,8 @@ def process_job(job_data):
     # 4. Split and upload chunks
     total_chunks = 0
     for fasta_file in extracted_files:
-        with open(fasta_file, "rb") as f:
-            total_chunks += split_and_upload(f, accession)
+        total_chunks += split_and_upload(fasta_file, accession)
+
 
     # 5. Add record to indexer table
     record_job_progress(jobid, accession, sequence, total_chunks)
