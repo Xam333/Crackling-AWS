@@ -174,14 +174,35 @@ class CracklingStack(Stack):
             stream=ddb_.StreamViewType.NEW_IMAGE
         )
 
+
+        ### NEW - Sam
+        ### The index creation pipeline keeps track of job information and processing stage using this table
+        ddbIndexerJobs = ddb_.Table(self, "ddbIndexerJobs",
+                partition_key=ddb_.Attribute(
+                    name="jobID", type=ddb_.AttributeType.STRING
+                ),
+                removal_policy=RemovalPolicy.DESTROY                      
+        )
+
         ### Lambda is an event-driven compute service.
         # Some lambda functions may need additional resources - these are provided via layers.
 
 
-        ### Layer containing the python script and binary required for building issl indices
-        lambdaLayerIsslScorerCreation = lambda_.LayerVersion(self, "lambdaLayerIsslScorerCreation",
+        ### NEW - Sam
+        ### Layer containing extractOffTargets.py, which produces encoded list of target sites.
+        lambdaLayerExtractOfftargets = lambda_.LayerVersion(self, "lambdaLayerExtractOfftargets",
+            code=lambda_.Code.from_asset("../layers/extractOfftargets"),  # folder containing extractOfftargets.py
+            compatible_runtimes=[lambda_.Runtime.PYTHON_3_12],
+            description="Layer containing extractOfftargets",  
+            removal_policy=RemovalPolicy.DESTROY                                               
+        )
+
+        ### NEW - Sam
+        ### Layer containing isslCreateIndex for building the final issl index table
+        lambdaLayerISSLCreation = lambda_.LayerVersion(self, "lambdaLayerISSLCreation",
             code=lambda_.Code.from_asset("../layers/isslCreation"),
-            removal_policy=RemovalPolicy.DESTROY
+            description="Contains isslCreateIndex binary",
+            removal_policy=RemovalPolicy.DESTROY                                              
         )
 
         ### This layer provides the ISSL scoring binary.
@@ -387,33 +408,106 @@ class CracklingStack(Stack):
         )
 
 
-        # -> -> issl_creation
-        lambdaIsslScorerCreation = lambda_.Function(self, "lambdaIsslScorerCreation", 
-            runtime=lambda_.Runtime.PYTHON_3_10,
-            handler="lambda_function.lambda_handler",
-            code=lambda_.Code.from_asset("../modules/isslCreation"),
-            layers=[lambdaLayerIsslScorerCreation, lambdaLayerCommonFuncs, lambdaLayerLib],
-            vpc=cracklingVpc,
-            vpc_subnets=ec2_.SubnetSelection(subnet_type=ec2_.SubnetType.PRIVATE_ISOLATED),
-            timeout= duration,
-            memory_size= 10240,
+        ### NEW - Sam
+        ### Lambda function to merge encoded offtarget lists and count repeat occurences
+        lambdaOfftargetMerger = lambda_.Function(self, "lambdaOfftargetMerger",
+            runtime=lambda_.Runtime.PYTHON_3_12,
+            handler="merger.lambda_handler",  # file:merger.py, function:lambda_handler
+            code=lambda_.Code.from_asset("../modules/offtargetMerger"),
+            memory_size=10240,
+            timeout=Duration.minutes(15),
+            environment={
+                "BUCKET": s3GenomeAccess.attr_alias
+            }
+        )
+        # Offtarget Merger Lambda Permissions
+        lambdaOfftargetMerger.add_to_role_policy(policyAccessS3GenomeBucket)
+
+
+        ### NEW - Sam
+        ### Lambda function that splits genome into chunks, ready for off target extraction
+        lambdaGenomeSplitter = lambda_.Function(self, "lambdaGenomeSplitter",
+            runtime=lambda_.Runtime.PYTHON_3_12,
+            handler="lambda_function.lambda_handler",   # file is lambda_function.py
+            code=lambda_.Code.from_asset("../modules/genomeSplitter"),
+            timeout=cdk.Duration.minutes(15),
+            memory_size=10240,
             ephemeral_storage_size = cdk.Size.gibibytes(10),
             environment={
-                'QUEUE' : sqsTargetScan.queue_url,
-                'BUCKET' : s3GenomeAccess.attr_alias,
-                'LD_LIBRARY_PATH' : ld_library_path,
-                'PATH' : path
+                "BUCKET": s3GenomeAccess.attr_alias,
+                "INDEXER_TABLE": ddbIndexerJobs.table_name,
+                "CHUNK_SIZE_MB": "100"
             }
         )
 
-        sqsIsslCreation.grant_consume_messages(lambdaIsslScorerCreation)
-        sqsTargetScan.grant_send_messages(lambdaIsslScorerCreation)
-        lambdaIsslScorerCreation.add_event_source_mapping(
+        lambdaGenomeSplitter.add_event_source_mapping(
             "mapIsslCreation",
             event_source_arn=sqsIsslCreation.queue_arn,
             batch_size=1
         )
-        lambdaIsslScorerCreation.add_to_role_policy(policyAccessS3GenomeBucket)
+        lambdaGenomeSplitter.add_to_role_policy(policyAccessS3GenomeBucket)
+        ddbIndexerJobs.grant_read_write_data(lambdaGenomeSplitter)
+
+
+        ### NEW - Sam
+        ### Lambda function to extract off targets on each chunk uploaded to /chunks/{accession}
+        lambdaExtractOfftargets = lambda_.Function(self, "lambdaExtractOffTargets",
+            runtime=lambda_.Runtime.PYTHON_3_12,
+            handler="lambda_function.lambda_handler",
+            code=lambda_.Code.from_asset("../modules/extractOfftargets"),  # folder with your lambda code
+            memory_size=10240,
+            timeout=Duration.minutes(15),
+            layers=[lambdaLayerExtractOfftargets],
+            environment={
+                "BUCKET": s3GenomeAccess.attr_alias,
+                "INDEXER_TABLE": ddbIndexerJobs.table_name,
+                "MERGER_FUNCTION": lambdaOfftargetMerger.function_name
+            },                                          
+        )
+        # Extract Off Targets Lambda Permissions:
+        lambdaExtractOfftargets.add_to_role_policy(policyAccessS3GenomeBucket)
+        ddbIndexerJobs.grant_read_write_data(lambdaExtractOfftargets)
+        lambdaExtractOfftargets.add_to_role_policy(
+            iam_.PolicyStatement(
+                actions=["lambda:InvokeFunction"],
+                resources=[f"arn:aws:lambda:{self.region}:{self.account}:function:{lambdaOfftargetMerger.function_name}"]
+            )
+        )
+        # Extract Off Targets Lambda S3 Trigger
+        notification = s3n_.LambdaDestination(lambdaExtractOfftargets)
+        s3Genome.add_event_notification(
+            s3_.EventType.OBJECT_CREATED,
+            notification,
+            s3_.NotificationKeyFilter(prefix="chunks/", suffix=".fasta")
+        )
+
+        ### NEW - Sam
+        ### Lambda function for creating final ISSL index table
+        lambdaISSLCreation = lambda_.Function(self, "lambdaISSLCreation",
+            runtime=lambda_.Runtime.PYTHON_3_12,
+            handler="indexCreator.lambda_handler",  # file:indexCreator.py, function:lambda_handler
+            code=lambda_.Code.from_asset("../lambdas/indexCreation"),
+            timeout=Duration.minutes(15),
+            memory_size=10240,
+            layers=[lambdaLayerISSLCreation],
+            environment={
+                "BUCKET": s3GenomeAccess.attr_alias,
+                "QUEUE": sqsTargetScan.queue_url,
+                "INDEXER_TABLE": ddbIndexerJobs.table_name
+            }                                     
+        )
+        # Index Creator Lambda Permissions
+        lambdaISSLCreation.add_to_role_policy(policyAccessS3GenomeBucket)
+        sqsTargetScan.grant_send_messages(lambdaISSLCreation)
+        ddbIndexerJobs.grant_read_write_data(lambdaISSLCreation)
+        # Index Creator S3 Bucket Trigger
+        notification = s3n_.LambdaDestination(lambdaISSLCreation)
+        s3Genome.add_event_notification(
+            s3_.EventType.OBJECT_CREATED,
+            notification,
+            s3_.NotificationKeyFilter(prefix="merged/", suffix=".offtargets")
+        )
+
         
         ### Lambda function that scans a sequence for CRISPR sites.
         # This function is triggered when a record is written to the DynamoDB jobs table.
