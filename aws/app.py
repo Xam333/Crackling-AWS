@@ -486,7 +486,7 @@ class CracklingStack(Stack):
         lambdaISSLCreation = lambda_.Function(self, "lambdaISSLCreation",
             runtime=lambda_.Runtime.PYTHON_3_10,
             handler="indexCreator.lambda_handler",  # file:indexCreator.py, function:lambda_handler
-            code=lambda_.Code.from_asset("../lambdas/indexCreation"),
+            code=lambda_.Code.from_asset("../modules/indexCreation"),
             timeout=Duration.minutes(15),
             memory_size=10240,
             layers=[lambdaLayerISSLCreation],
