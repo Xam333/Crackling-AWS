@@ -420,7 +420,7 @@ class CracklingStack(Stack):
         ### Lambda function to merge encoded offtarget lists and count repeat occurences
         lambdaOfftargetMerger = lambda_.Function(self, "lambdaOfftargetMerger",
             runtime=lambda_.Runtime.PYTHON_3_10,
-            handler="merger.lambda_handler",  # file:merger.py, function:lambda_handler
+            handler="lambda_function.lambda_handler",
             code=lambda_.Code.from_asset("../modules/offtargetMerger"),
             memory_size=10240,
             timeout=Duration.minutes(15),
