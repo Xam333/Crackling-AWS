@@ -192,7 +192,7 @@ class CracklingStack(Stack):
         ### Layer containing extractOffTargets.py, which produces encoded list of target sites.
         lambdaLayerExtractOfftargets = lambda_.LayerVersion(self, "lambdaLayerExtractOfftargets",
             code=lambda_.Code.from_asset("../layers/extractOfftargets"),  # folder containing extractOfftargets.py
-            compatible_runtimes=[lambda_.Runtime.PYTHON_3_12],
+            compatible_runtimes=[lambda_.Runtime.PYTHON_3_10],
             description="Layer containing extractOfftargets",  
             removal_policy=RemovalPolicy.DESTROY                                               
         )
@@ -212,7 +212,7 @@ class CracklingStack(Stack):
             compatible_architectures=[lambda_.Architecture.X86_64]
         )
 
-        ### Lambda layer containing python3.10 packages for requests
+        ### Lambda layer containing python 3.10 packages for requests
         lambdaLayerRequests = lambda_.LayerVersion(self, "lambdaLayerRequests",
             code=lambda_.Code.from_asset("../layers/requestsPy310Pkgs"),
             removal_policy=RemovalPolicy.DESTROY,
