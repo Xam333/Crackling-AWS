@@ -448,6 +448,7 @@ class CracklingStack(Stack):
         lambdaGenomeSplitter.add_to_role_policy(policyAccessS3GenomeBucket)
         ddbIndexerJobs.grant_read_write_data(lambdaGenomeSplitter)
         sqsIsslCreation.grant_consume_messages(lambdaGenomeSplitter)
+        s3Genome.grant_read_write(lambdaGenomeSplitter)
 
 
         ### NEW - Sam
