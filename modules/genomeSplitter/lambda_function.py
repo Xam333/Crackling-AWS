@@ -17,7 +17,7 @@ s3_resource = boto3.resource('s3')
 # Create dynamodb client
 dynamodb = boto3.resource('dynamodb')
 INDEXER_TABLE_NAME = os.environ['INDEXER_TABLE']
-INDEXER_TABLE = dynamodb.Table[INDEXER_TABLE_NAME]
+INDEXER_TABLE = dynamodb.Table(INDEXER_TABLE_NAME)
 
 # --- Helper Functions ---
 def parse_job_message(record):
