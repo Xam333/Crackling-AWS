@@ -417,7 +417,7 @@ class CracklingStack(Stack):
             memory_size=10240,
             timeout=Duration.minutes(15),
             environment={
-                "BUCKET": s3GenomeAccess.attr_alias
+                "BUCKET": s3Genome.bucket_name
             }
         )
         # Offtarget Merger Lambda Permissions
@@ -434,7 +434,7 @@ class CracklingStack(Stack):
             memory_size=10240,
             ephemeral_storage_size = cdk.Size.gibibytes(10),
             environment={
-                "BUCKET": s3GenomeAccess.attr_alias,
+                "BUCKET": s3Genome.bucket_name,
                 "INDEXER_TABLE": ddbIndexerJobs.table_name,
                 "CHUNK_SIZE_MB": "100"
             }
@@ -448,7 +448,6 @@ class CracklingStack(Stack):
         lambdaGenomeSplitter.add_to_role_policy(policyAccessS3GenomeBucket)
         ddbIndexerJobs.grant_read_write_data(lambdaGenomeSplitter)
         sqsIsslCreation.grant_consume_messages(lambdaGenomeSplitter)
-        s3Genome.grant_read_write(lambdaGenomeSplitter)
 
 
         ### NEW - Sam
@@ -461,7 +460,7 @@ class CracklingStack(Stack):
             timeout=Duration.minutes(15),
             layers=[lambdaLayerExtractOfftargets],
             environment={
-                "BUCKET": s3GenomeAccess.attr_alias,
+                "BUCKET": s3Genome.bucket_name,
                 "INDEXER_TABLE": ddbIndexerJobs.table_name,
                 "MERGER_FUNCTION": lambdaOfftargetMerger.function_name
             },                                          
@@ -493,7 +492,7 @@ class CracklingStack(Stack):
             memory_size=10240,
             layers=[lambdaLayerISSLCreation],
             environment={
-                "BUCKET": s3GenomeAccess.attr_alias,
+                "BUCKET": s3Genome.bucket_name,
                 "QUEUE": sqsTargetScan.queue_url,
                 "INDEXER_TABLE": ddbIndexerJobs.table_name
             }                                     
