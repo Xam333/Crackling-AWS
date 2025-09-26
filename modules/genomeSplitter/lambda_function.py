@@ -25,7 +25,7 @@ def parse_job_message(record):
     message = json.loads(record["body"])
 
     job_data = {
-        "jobid": message["jobID"],
+        "jobid": message["JobID"],
         "accession": message["Genome"],
         "sequence": message["Sequence"],
     }
