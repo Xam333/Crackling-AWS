@@ -411,7 +411,7 @@ class CracklingStack(Stack):
         ### NEW - Sam
         ### Lambda function to merge encoded offtarget lists and count repeat occurences
         lambdaOfftargetMerger = lambda_.Function(self, "lambdaOfftargetMerger",
-            runtime=lambda_.Runtime.PYTHON_3_12,
+            runtime=lambda_.Runtime.PYTHON_3_10,
             handler="merger.lambda_handler",  # file:merger.py, function:lambda_handler
             code=lambda_.Code.from_asset("../modules/offtargetMerger"),
             memory_size=10240,
@@ -427,7 +427,7 @@ class CracklingStack(Stack):
         ### NEW - Sam
         ### Lambda function that splits genome into chunks, ready for off target extraction
         lambdaGenomeSplitter = lambda_.Function(self, "lambdaGenomeSplitter",
-            runtime=lambda_.Runtime.PYTHON_3_12,
+            runtime=lambda_.Runtime.PYTHON_3_10,
             handler="lambda_function.lambda_handler",   # file is lambda_function.py
             code=lambda_.Code.from_asset("../modules/genomeSplitter"),
             timeout=cdk.Duration.minutes(15),
@@ -452,7 +452,7 @@ class CracklingStack(Stack):
         ### NEW - Sam
         ### Lambda function to extract off targets on each chunk uploaded to /chunks/{accession}
         lambdaExtractOfftargets = lambda_.Function(self, "lambdaExtractOffTargets",
-            runtime=lambda_.Runtime.PYTHON_3_12,
+            runtime=lambda_.Runtime.PYTHON_3_10,
             handler="lambda_function.lambda_handler",
             code=lambda_.Code.from_asset("../modules/extractOfftargets"),  # folder with your lambda code
             memory_size=10240,
@@ -484,7 +484,7 @@ class CracklingStack(Stack):
         ### NEW - Sam
         ### Lambda function for creating final ISSL index table
         lambdaISSLCreation = lambda_.Function(self, "lambdaISSLCreation",
-            runtime=lambda_.Runtime.PYTHON_3_12,
+            runtime=lambda_.Runtime.PYTHON_3_10,
             handler="indexCreator.lambda_handler",  # file:indexCreator.py, function:lambda_handler
             code=lambda_.Code.from_asset("../lambdas/indexCreation"),
             timeout=Duration.minutes(15),
