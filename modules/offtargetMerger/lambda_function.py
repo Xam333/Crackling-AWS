@@ -1,103 +1,148 @@
-import os, boto3, subprocess, tempfile, json
+# Imports
+import os
+import boto3
+import heapq
+import io
+import tempfile
 
-s3 = boto3.client('s3')
-sqs = boto3.client('sqs')
-dynamodb = boto3.resource('dynamodb')
+s3 = boto3.client("s3")
+S3_BUCKET = os.environ['BUCKET']
 
-S3_BUCKET = os.environ['BUCKET']         
-TARGET_SCAN_QUEUE = os.environ['QUEUE']  
-INDEXER_TABLE_NAME = os.environ['INDEXER_TABLE']
-BINARY_PATH = "/opt/ISSL/isslCreateIndex"
+RECORD40_SIZE = 5  # 40-bit input records (seq only)
+RECORD64_SIZE = 8  # 64-bit output records (seq + count)
 
-SEQ_LENGTH = "20"
-SLICE_WIDTH = "8"
 
-INDEXER_TABLE = dynamodb.Table(INDEXER_TABLE_NAME)
+# ------------------------------
+# Binary I/O Helpers
+# ------------------------------
+def read_record_40(f):
+    """Read one 40-bit record (seq only)."""
+    data = f.read(RECORD40_SIZE)
+    if not data or len(data) < RECORD40_SIZE:
+        return None
+    return int.from_bytes(data, "big")
 
-# --- Helpers ---
-def extract_job_id_from_event(event):
-    # Expect S3 key: merged/{accession}/{jobid}.offtargets
-    record = event['Records'][0]
-    s3_key = record['s3']['object']['key']
-    job_id = os.path.splitext(os.path.basename(s3_key))[0]
-    return job_id, s3_key
 
-def fetch_job_metadata(job_id):
-    # Query DynamoDB IndexerTable
-    resp = INDEXER_TABLE.get_item(Key={"jobID": job_id})
-    if 'Item' not in resp:
-        raise ValueError(f"JobID {job_id} not found in IndexerTable")
-    item = resp['Item']
-    return item['Genome'], item['Sequence'], item['jobID']  # accession, sequence, jobid
+def write_record_64(f, seq, count):
+    """Write 64-bit record (seq + 24-bit count)."""
+    packed = (seq << 24) | (count & 0xFFFFFF)
+    f.write(packed.to_bytes(RECORD64_SIZE, "big"))
 
-def download_offtargets(s3_key, local_path):
-    print(f"[INDEX CREATOR] ⬇️ Downloading {s3_key}")
-    s3.download_file(S3_BUCKET, s3_key, local_path)
-    print(f"[INDEX CREATOR] 🟢 Downloaded to {local_path}")
 
-def run_issl_index(input_path, output_path):
-    print(f"[INDEX CREATOR] ⚙️ Running isslCreateIndex...")
-    cmd = f"{BINARY_PATH} {input_path} {SEQ_LENGTH} {SLICE_WIDTH} {output_path}"
-    ret = os.system(cmd)
-    if ret != 0:
-        raise RuntimeError(f"isslCreateIndex failed with exit code {ret}")
-    print(f"[INDEX CREATOR] 🟢 Binary finished, output at {output_path}")
+# ------------------------------
+# S3 Helpers
+# ------------------------------
+def download_chunk_files(accession, total_chunks):
+    """Download all chunk .offtargets files for this accession into /tmp."""
+    local_files = []
 
-def upload_index(accession, local_path):
-    s3_key = f"{accession}/issl/{accession}.issl"
-    s3.upload_file(local_path, S3_BUCKET, s3_key)
-    print(f"[INDEX CREATOR] 🟢 Uploaded index to {s3_key}")
-    return s3_key
+    for i in range(total_chunks):
+        chunk_key = f"offtargets/{accession}/chunk_{i}.offtargets"
+        local_path = os.path.join(tempfile.gettempdir(), f"chunk_{i}.offtargets")
+        try:
+            s3.download_file(S3_BUCKET, chunk_key, local_path)
+            local_files.append(local_path)
+            print(f"[MERGER] ⬇️ Downloaded {chunk_key}")
+        except Exception as e:
+            print(f"[MERGER] 🔴 Could Not Download {chunk_key}: {e}")
 
-def send_completion_message(accession, job_id, sequence):
-    body = {
-        "Genome": accession,
-        "Sequence": sequence,
-        "JobID": job_id
-    }
-    sqs.send_message(
-        QueueUrl=TARGET_SCAN_QUEUE,
-        MessageBody=json.dumps(body)
-    )
-    print(f"[INDEX CREATOR] 📩 Sent completion message: {body}")
+    return local_files
 
-# --- Lambda Handler ---
+
+def upload_merged_file(accession, merged_stream):
+    """Upload merged binary file to S3."""
+    merged_key = f"merged/{accession}/{accession}.offtargets"
+    merged_stream.seek(0)
+    s3.upload_fileobj(merged_stream, S3_BUCKET, merged_key)
+    print(f"[MERGER] 🟢 Uploaded merged file: {merged_key}")
+    return merged_key
+
+
+def cleanup_chunks(accession, total_chunks):
+    """Delete per-chunk .offtargets and .fasta files from S3."""
+    print(f"[MERGER] 🟠 Cleaning up chunk files from S3...")
+    for i in range(total_chunks):
+        offtarget_chunk_key = f"offtargets/{accession}/chunk_{i}.offtargets"
+        fasta_chunk_key = f"chunks/{accession}/chunk_{i}.fasta"
+        for key in [offtarget_chunk_key, fasta_chunk_key]:
+            try:
+                s3.delete_object(Bucket=S3_BUCKET, Key=key)
+                print(f"[MERGER] 🗑️ Deleted {key}")
+            except Exception as e:
+                print(f"[MERGER] 🔴 Failed to delete {key}: {e}")
+
+
+# ------------------------------
+# Merge Logic
+# ------------------------------
+def merge_offtargets(local_files):
+    """Perform k-way merge of sorted .offtargets files into 64-bit stream."""
+    def make_iter(f):
+        while True:
+            seq = read_record_40(f)
+            if seq is None:
+                break
+            yield (seq, 1)  # each entry counts as 1
+        f.close()
+
+    file_iters = []
+    for path in local_files:
+        f = open(path, "rb")
+        file_iters.append(make_iter(f))
+
+    merged_stream = io.BytesIO()
+    merged_iter = heapq.merge(*file_iters, key=lambda x: x[0])
+
+    prev_seq, total_count = None, 0
+    for seq, count in merged_iter:
+        if seq == prev_seq:
+            total_count += count
+        else:
+            if prev_seq is not None:
+                write_record_64(merged_stream, prev_seq, total_count)
+            prev_seq, total_count = seq, count
+
+    if prev_seq is not None:
+        write_record_64(merged_stream, prev_seq, total_count)
+
+    return merged_stream
+
+
+# ------------------------------
+# Lambda Handler
+# ------------------------------
 def lambda_handler(event, context):
-    print("[INDEX CREATOR] 🟠 Received S3 Event:", event)
-    
+    print(f"[MERGER] 🟠 Received Event: {event}")
+
+    job_id = event.get("jobID")       # DynamoDB job ID
+    accession = event.get("Genome")   # accession string
+    total_chunks_raw = event.get("total_chunks")
+
+    if not job_id or not accession or total_chunks_raw is None:
+        return {"statusCode": 400, "body": "Missing jobID, Genome, or total_chunks"}
+
     try:
-        job_id, s3_key = extract_job_id_from_event(event)
-        accession, sequence, job_id = fetch_job_metadata(job_id)
-        print(f"[INDEX CREATOR] 🆔 Accession: {accession}, JobID: {job_id}, Sequence: {sequence}")
-    except ValueError as e:
-        print(f"[INDEX CREATOR] 🔴 {e}")
-        return {"statusCode": 400, "body": str(e)}
+        total_chunks = int(total_chunks_raw)
+    except ValueError:
+        return {"statusCode": 400, "body": "Invalid value for total_chunks"}
 
-    with tempfile.TemporaryDirectory() as tmpdir:
-        input_path = os.path.join(tmpdir, "input.offtargets")
-        output_path = os.path.join(tmpdir, "output.issl")
+    print(f"[MERGER] 🟠 Starting merge for job {job_id}, accession {accession} ({total_chunks} chunks)")
 
-        # 1. Download merged off-targets
-        download_offtargets(s3_key, input_path)
+    # 1. Download per-chunk files
+    local_files = download_chunk_files(accession, total_chunks)
 
-        # 2. Run ISSL binary
-        run_issl_index(input_path, output_path)
+    # 2. Merge into 64-bit records
+    merged_stream = merge_offtargets(local_files)
 
-        # 3. Upload index
-        s3_output_key = upload_index(accession, output_path)
+    # 3. Upload merged file
+    merged_key = upload_merged_file(accession, merged_stream)
 
-        # 4. Optionally delete merged off-targets
-        s3.delete_object(Bucket=S3_BUCKET, Key=s3_key)
-        print(f"[INDEX CREATOR] 🗑️ Deleted merged off-targets: {s3_key}")
+    # 4. Cleanup S3 chunks
+    cleanup_chunks(accession, total_chunks)
 
-        # 5. Send completed message
-        send_completion_message(accession, job_id, sequence)
-
-        # 6. Delete job from IndexerTable
-        INDEXER_TABLE.delete_item(Key={"jobID": job_id})
-        print(f"[INDEX CREATOR] 🗑️ Deleted job {job_id} from IndexerTable")
+    print(f"[MERGER] ✅ Completed merge for job {job_id}, accession {accession}")
 
     return {
         "statusCode": 200,
-        "body": f"ISSL index uploaded to {s3_output_key} and completion message sent"
+        "body": f"✅ Merged {total_chunks} chunks for {accession} into {merged_key} and deleted source chunks",
     }
