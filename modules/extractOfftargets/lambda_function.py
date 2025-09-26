@@ -1,5 +1,6 @@
 # Imports
 import boto3, os, tempfile, shutil, json
+from boto3.dynamodb.conditions import Key
 
 import extractOfftargets
 
@@ -17,19 +18,19 @@ INDEXER_TABLE = dynamodb.Table(INDEXER_TABLE_NAME)
 
 # --- Helper Functions ---
 def parse_s3_key(s3_key: str):
-    # Extract accession and chunk file name from s3 key.
-    # Format: accession/chunks/chunk_0.fasta
+    # Expected format: chunks/<accession>/chunk_X.fasta
     parts = s3_key.split("/")
-    if len(parts) < 3 or not s3_key.endswith(".fasta"):
+    if len(parts) != 3 or parts[0] != "chunks" or not s3_key.endswith(".fasta"):
         return None, None
-    accession = parts[0]
-    chunk_file = parts[-1]
+    accession = parts[1]  # second element is the genome accession
+    chunk_file = parts[2]  # third element is the chunk file
     return accession, chunk_file
+
 
 def download_chunk(accession, chunk_file):
     # Download chunk from S3 to temp
     local_path = f"/tmp/{chunk_file}"
-    s3_key = f"{accession}/chunks/{chunk_file}"
+    s3_key = f"chunks/{accession}/{chunk_file}"
     s3_client.download_file(BUCKET_NAME, s3_key, local_path)
     return local_path
 
@@ -53,11 +54,25 @@ def run_extract_offtargets(input_path, chunk_file):
 
 def upload_offtargets(accession, chunk_name, output_path):
     # Upload offtargets file to S3
-    s3_output_key = f"{accession}/offtargets/{chunk_name}.offtargets"
-    s3_client.upload_fileobj(output_path, BUCKET_NAME, s3_output_key)
+    s3_output_key = f"offtargets/{accession}/{chunk_name}.offtargets"
+    with open(output_path, "rb") as f:
+        s3_client.upload_fileobj(f, BUCKET_NAME, s3_output_key)
     print(f"[OFFTARGET EXTRACTOR] 🟢 Uploaded {s3_output_key}")
 
     return s3_output_key
+
+
+def get_jobid_from_accession(accession):
+    response = INDEXER_TABLE.query(
+        IndexName="Genome-index",   # you need a GSI on Genome attribute
+        KeyConditionExpression=Key("Genome").eq(accession),
+        Limit=1
+    )
+    if response["Items"]:
+        return response["Items"][0]["jobID"]
+    else:
+        raise ValueError(f"No job found for accession {accession}")
+
 
 
 def update_progress(jobid, accession):
@@ -101,10 +116,12 @@ def lambda_handler(event, context):
         s3_key = record["s3"]["object"]["key"]
 
         accession, chunk_file = parse_s3_key(s3_key)
+        
+
         if not accession:
             continue
 
-        jobid = accession  # In this pipeline jobID == accession
+        jobid = get_jobid_from_accession(accession)
         print(f"[OFFTARGET EXTRACTOR] Processing {chunk_file} for job {jobid}")
 
         input_path = None
