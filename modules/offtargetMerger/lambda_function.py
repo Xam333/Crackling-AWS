@@ -49,9 +49,8 @@ def download_chunk_files(accession, total_chunks):
     return local_files
 
 
-def upload_merged_file(accession, merged_stream):
-    """Upload merged binary file to S3."""
-    merged_key = f"merged/{accession}/{accession}.offtargets"
+def upload_merged_file(accession, job_id, merged_stream):
+    merged_key = f"merged/{accession}/{job_id}.offtargets"
     merged_stream.seek(0)
     s3.upload_fileobj(merged_stream, S3_BUCKET, merged_key)
     print(f"[MERGER] 🟢 Uploaded merged file: {merged_key}")
@@ -135,7 +134,7 @@ def lambda_handler(event, context):
     merged_stream = merge_offtargets(local_files)
 
     # 3. Upload merged file
-    merged_key = upload_merged_file(accession, merged_stream)
+    merged_key = upload_merged_file(accession, job_id, merged_stream)
 
     # 4. Cleanup S3 chunks
     cleanup_chunks(accession, total_chunks)
