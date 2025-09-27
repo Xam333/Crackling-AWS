@@ -464,6 +464,7 @@ class CracklingStack(Stack):
             runtime=lambda_.Runtime.PYTHON_3_10,
             handler="lambda_function.lambda_handler",
             code=lambda_.Code.from_asset("../modules/extractOfftargets"),  # folder with your lambda code
+            ephemeral_storage_size=Size.gibibytes(10),
             memory_size=10240,
             timeout=Duration.minutes(15),
             layers=[lambdaLayerExtractOfftargets],
@@ -498,6 +499,7 @@ class CracklingStack(Stack):
             code=lambda_.Code.from_asset("../modules/indexCreation"),
             timeout=Duration.minutes(15),
             memory_size=10240,
+            ephemeral_storage_size=Size.gibibytes(10),
             layers=[lambdaLayerISSLCreation],
             environment={
                 "BUCKET": s3Genome.bucket_name,
