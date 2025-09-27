@@ -14,6 +14,7 @@ from aws_cdk import (
     Duration,
     RemovalPolicy,
     Stack,
+    Size,
     aws_ec2 as ec2_,
     aws_lambda as lambda_,
     aws_apigateway as api_,
