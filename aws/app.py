@@ -424,6 +424,7 @@ class CracklingStack(Stack):
             handler="lambda_function.lambda_handler",
             code=lambda_.Code.from_asset("../modules/offtargetMerger"),
             memory_size=10240,
+            ephemeral_storage_size = cdk.Size.gibibytes(10),
             timeout=Duration.minutes(15),
             environment={
                 "BUCKET": s3Genome.bucket_name
